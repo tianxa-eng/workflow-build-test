@@ -1,0 +1,40 @@
+name: Execute Flow
+on:
+  workflow_dispatch:
+    inputs:
+      work_queue:
+        description: 'Work Queue name'
+        required: false
+        default: ''
+
+jobs:
+  execute-flow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: USERNAME
+          password: ${{ secrets.GHCR_TOKEN_FOR_TIANXA }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync
+
+      - name: Run Flow in Docker
+        env:
+          PREFECT_API_URL: ${{ secrets.PREFECT_API_URL }}
+          PREFECT_API_AUTH_STRING: ${{ secrets.PREFECT_API_AUTH_STRING }}
+        run: |
+          WORK_QUEUE="${{ inputs.work_queue }}"
+          if [ -z "$WORK_QUEUE" ]; then
+            WORK_QUEUE="${GITHUB_REPOSITORY//\//-}"
+          fi
+          uv run prefect worker start --name "${GITHUB_REPOSITORY//\//-}" --pool gdq-etl-pool --work-queue "$WORK_QUEUE" --type docker --run-once
