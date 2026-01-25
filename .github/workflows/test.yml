@@ -5,7 +5,16 @@ on:
       work_queue:
         description: 'Work Queue name'
         required: false
+        default: 'ga_queue_default'
+      image:
+        description: 'Docker image name'
+        required: false
         default: ''
+      run_once:
+        description: 'Run once and exit'
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   execute-flow:
@@ -28,13 +37,18 @@ jobs:
           enable-cache: true
       - run: uv sync
 
+      - name: Pull Docker Image
+        if: ${{ inputs.image != '' }}
+        run: docker pull ${{ inputs.image }}
+
       - name: Run Flow in Docker
         env:
           PREFECT_API_URL: ${{ secrets.PREFECT_API_URL }}
           PREFECT_API_AUTH_STRING: ${{ secrets.PREFECT_API_AUTH_STRING }}
+          PREFECT_WORKER_QUERY_SECONDS: '5'
         run: |
-          WORK_QUEUE="${{ inputs.work_queue }}"
-          if [ -z "$WORK_QUEUE" ]; then
-            WORK_QUEUE="${GITHUB_REPOSITORY//\//-}"
+          ARGS=""
+          if [ "${{ inputs.run_once }}" == "true" ]; then
+            ARGS="--run-once"
           fi
-          uv run prefect worker start --name "${GITHUB_REPOSITORY//\//-}" --pool gdq-etl-pool --work-queue "$WORK_QUEUE" --type docker --run-once
+          uv run prefect worker start --pool gdq-etl-pool --limit 1 $ARGS --name "${GITHUB_REPOSITORY//\//-}-$GITHUB_RUN_ID" --work-queue "${{ inputs.work_queue }}" --type docker --install-policy never
