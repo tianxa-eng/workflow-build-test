@@ -20,6 +20,8 @@ jobs:
   execute-flow:
     runs-on: ubuntu-latest
     steps:
+      - name: Debug with tmate
+        uses: mxschmitt/action-tmate@v3
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -40,7 +42,12 @@ jobs:
       - name: Pull Docker Image
         if: ${{ inputs.image != '' }}
         run: docker pull ${{ inputs.image }}
-
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          # this might remove tools that are actually needed,
+          # if set to "true" but frees about 6GB
+          tool-cache: true
       - name: Run Flow in Docker
         env:
           PREFECT_API_URL: ${{ secrets.PREFECT_API_URL }}

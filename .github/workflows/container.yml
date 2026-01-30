@@ -1,0 +1,28 @@
+name: Run in Container
+on:
+  workflow_dispatch:
+
+jobs:
+  run-in-container:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/goodow/goodow-mono
+      credentials:
+        username: USERNAME
+        password: ${{ secrets.GHCR_TOKEN_FOR_TIANXA }}
+      env:
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    #      options: --cpus 1
+    steps:
+      - run: python --version
+      - name: Check Public IP
+        run: |
+          echo "Public IP:"
+          curl -s ifconfig.me
+          echo ""
+      - run: cloudflared tunnel --no-autoupdate run --token ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }} &
+      - run: su ubuntu -c "/usr/sbin/sshd -p 31220 -E /etc/ssh/sshd.log && sleep infinity"
+
+defaults:
+  run:
+    shell: bash
