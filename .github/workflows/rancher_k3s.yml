@@ -1,0 +1,28 @@
+name: Run rancher/k3s
+on:
+  workflow_dispatch:
+
+jobs:
+  run-in-container:
+    runs-on: ubuntu-latest
+    container:
+      image: rancher/k3s:v1.35.0-k3s1
+      options: >-
+        --privileged
+      volumes:
+        # cgroups（跑 containerd/kubelet 往往需要）
+        - /sys/fs/cgroup:/sys/fs/cgroup:rw
+        # 内核模块（iptables/nf_conntrack 等场景可能用得上）
+        - /lib/modules:/lib/modules:ro
+        - /var/lib/rancher/k3s:/var/lib/rancher/k3s
+
+    steps:
+      - name: Start k3s agent
+        shell: sh
+        env:
+          K3S_URL: ${{ secrets.K3S_URL }}
+          K3S_TOKEN: ${{ secrets.K3S_TOKEN }}
+          K3S_NODE_NAME: gha-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          echo "Starting k3s agent, node=${K3S_NODE_NAME}"
+          /bin/k3s agent --node-name "${K3S_NODE_NAME}" --node-taint "no-external-ip=true:NoExecute"

@@ -6,10 +6,10 @@ jobs:
   run-in-container:
     runs-on: ubuntu-latest
     container:
-      image: rancher/k3s:v1.35.0-k3s1
-      #      credentials:
-      #        username: USERNAME
-      #        password: ${{ secrets.GHCR_TOKEN_FOR_TIANXA }}
+      image: ghcr.io/goodow/k3s
+      credentials:
+        username: USERNAME
+        password: ${{ secrets.GHCR_TOKEN_FOR_TIANXA }}
       env:
         PIP_DISABLE_PIP_VERSION_CHECK: "1"
       options: >-
@@ -22,28 +22,28 @@ jobs:
         - /var/lib/rancher/k3s:/var/lib/rancher/k3s
 
     steps:
-      #      - name: Check Public IP
-      #        run: |
-      #          echo "Public IP:"
-      #          curl -s ifconfig.me
-      #          echo ""
-      #      - run: cloudflared tunnel --no-autoupdate run --token ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }} &
-      #      - run: /usr/sbin/sshd -p 31220 && sleep infinity
+      - name: Check Public IP
+        run: |
+          echo "Public IP:"
+          curl -s ifconfig.me
+          echo ""
 
       - name: Start k3s agent (background)
-        shell: sh
+        shell: bash
         env:
           K3S_URL: ${{ secrets.K3S_URL }}
           K3S_TOKEN: ${{ secrets.K3S_TOKEN }}
           K3S_NODE_NAME: gha-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
+          set -euo pipefail
+
           echo "Starting k3s agent, node=${K3S_NODE_NAME}"
-          # K3S_URL + K3S_TOKEN 是 agent 加入必需项 :contentReference[oaicite:8]{index=8}
-          # 建议显式指定 node-name，避免 hostname 冲突 :contentReference[oaicite:9]{index=9}
-          /bin/k3s agent \
-            --node-name "${K3S_NODE_NAME}"
+          nohup /bin/k3s agent \
+            --node-name "${K3S_NODE_NAME}" --node-taint "no-external-ip=true:NoExecute" \
+            > /var/log/k3s-agent.log 2>&1 &
 
-
+      - run: cloudflared tunnel --no-autoupdate run --token ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }} &
+      - run: /usr/sbin/sshd -p 31220 && sleep infinity
 
 defaults:
   run:
