@@ -6,22 +6,44 @@ jobs:
   run-in-container:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/goodow/goodow-mono
-      credentials:
-        username: USERNAME
-        password: ${{ secrets.GHCR_TOKEN_FOR_TIANXA }}
+      image: rancher/k3s:v1.35.0-k3s1
+      #      credentials:
+      #        username: USERNAME
+      #        password: ${{ secrets.GHCR_TOKEN_FOR_TIANXA }}
       env:
         PIP_DISABLE_PIP_VERSION_CHECK: "1"
-    #      options: --cpus 1
+      options: >-
+        --privileged
+      volumes:
+        # cgroups（跑 containerd/kubelet 往往需要）
+        - /sys/fs/cgroup:/sys/fs/cgroup:rw
+        # 内核模块（iptables/nf_conntrack 等场景可能用得上）
+        - /lib/modules:/lib/modules:ro
+        - /var/lib/rancher/k3s:/var/lib/rancher/k3s
+
     steps:
-      - run: python --version
-      - name: Check Public IP
+      #      - name: Check Public IP
+      #        run: |
+      #          echo "Public IP:"
+      #          curl -s ifconfig.me
+      #          echo ""
+      #      - run: cloudflared tunnel --no-autoupdate run --token ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }} &
+      #      - run: /usr/sbin/sshd -p 31220 && sleep infinity
+
+      - name: Start k3s agent (background)
+        shell: sh
+        env:
+          K3S_URL: ${{ secrets.K3S_URL }}
+          K3S_TOKEN: ${{ secrets.K3S_TOKEN }}
+          K3S_NODE_NAME: gha-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          echo "Public IP:"
-          curl -s ifconfig.me
-          echo ""
-      - run: cloudflared tunnel --no-autoupdate run --token ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }} &
-      - run: su ubuntu -c "/usr/sbin/sshd -p 31220 -E /etc/ssh/sshd.log && sleep infinity"
+          echo "Starting k3s agent, node=${K3S_NODE_NAME}"
+          # K3S_URL + K3S_TOKEN 是 agent 加入必需项 :contentReference[oaicite:8]{index=8}
+          # 建议显式指定 node-name，避免 hostname 冲突 :contentReference[oaicite:9]{index=9}
+          /bin/k3s agent \
+            --node-name "${K3S_NODE_NAME}"
+
+
 
 defaults:
   run:
