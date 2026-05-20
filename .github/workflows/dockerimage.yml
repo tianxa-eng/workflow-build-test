@@ -1,0 +1,289 @@
+name: Docker Image CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - mono
+
+env:
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: -1002100967409  # Alert channel ID
+
+jobs:
+
+  # ── 质量门禁: 验证不通过则阻止镜像构建 ────────────────────────────────────
+  # 对应本地 find_and_verify.py <lib> 的 lib 级语义:
+  # format/lint 检查包根; pyright 默认只检查生产文件; structural harness 按 lib 可选.
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Extract Target Commit
+        id: extract
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          TARGET_COMMIT=$(echo "$COMMIT_MSG" | grep -oE '@[0-9a-fA-F]+' | sed 's/@//')
+          if [ -z "$TARGET_COMMIT" ]; then
+            TARGET_COMMIT="master"
+          fi
+          echo "TARGET_COMMIT=$TARGET_COMMIT" >> $GITHUB_ENV
+
+      - name: Init and update submodules
+        env:
+          PAT_FOR_GOODOW_AD_SUBMODULES: ${{ secrets.PAT_FOR_GOODOW_AD_SUBMODULES }}
+          TARGET_COMMIT: ${{ env.TARGET_COMMIT }}
+        run: |
+          bash .github/scripts/overwrite.sh "$TARGET_COMMIT"
+          git config --global url."https://x-access-token:${{ secrets.PAT_FOR_GOODOW_AD_SUBMODULES }}@github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      # --check: 秒级验证 lockfile 与 pyproject.toml 一致, 不一致立即失败
+      - name: Verify lockfile
+        run: uv lock --check
+
+      # lockfile 验证通过后安装 dev group (ruff, pyright, pytest)
+      # --frozen: 跳过 re-resolve, 直接按已验证的 lockfile 安装
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+
+#      - name: Verify libraries
+#        run: uv run --no-sync python .github/scripts/verify_libraries.py gdq-rd gdq-sim gdq-etl
+
+  # ── 镜像构建: 仅在验证通过后执行 ──────────────────────────────────────────
+  # build (Free Disk / checkout / 拉镜像) 与 verify 并行启动以重叠 setup
+  #
+  # Build DAG (bake 自动并行):
+  #   mono-base
+  #     ├─ goodow-mono   (FROM mono-base, uv sync 全 workspace + dev)
+  #     └─ gdq-etl       (FROM mono-base, uv sync --package gdq-etl 子图; 与 goodow-mono 并行)
+  build:
+    runs-on: ubuntu-latest
+    env:
+      BAKE_TARGETS: mono-base,goodow-mono,gdq-etl,gdq-rd,gdq-sim
+      BAKE_SET: |
+        *.context=.
+        mono-base.context=.devcontainer/mono-base
+        mono-base.cache-from=type=registry,ref=ghcr.io/goodow/mono-base:build-cache
+        mono-base.cache-to=type=registry,ref=ghcr.io/goodow/mono-base:build-cache,mode=max
+        goodow-mono.cache-from=type=registry,ref=ghcr.io/goodow/goodow-mono:build-cache
+        goodow-mono.cache-to=type=registry,ref=ghcr.io/goodow/goodow-mono:build-cache,mode=max
+        gdq-etl.cache-from=type=registry,ref=ghcr.io/goodow/gdq-etl:build-cache
+        gdq-etl.cache-to=type=registry,ref=ghcr.io/goodow/gdq-etl:build-cache,mode=max
+        gdq-rd.cache-from=type=registry,ref=ghcr.io/goodow/gdq-rd:build-cache
+        gdq-rd.cache-to=type=registry,ref=ghcr.io/goodow/gdq-rd:build-cache,mode=max
+        gdq-sim.cache-from=type=registry,ref=ghcr.io/goodow/gdq-sim:build-cache
+        gdq-sim.cache-to=type=registry,ref=ghcr.io/goodow/gdq-sim:build-cache,mode=max
+
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          # this might remove tools that are actually needed,
+          # if set to "true" but frees about 6GB
+          tool-cache: true
+
+      - uses: actions/checkout@v6
+      - name: Extract Target Commit
+        id: extract
+        run: |
+          COMMIT_MSG="${{ github.event.head_commit.message }}"
+          TARGET_COMMIT=$(echo "$COMMIT_MSG" | grep -oE '@[0-9a-fA-F]+' | sed 's/@//')
+          if [ -z "$TARGET_COMMIT" ]; then
+            TARGET_COMMIT="master"
+          fi
+          echo "TARGET_COMMIT=$TARGET_COMMIT" >> $GITHUB_ENV
+
+      - name: Init and update submodules
+        env:
+          PAT_FOR_GOODOW_AD_SUBMODULES: ${{ secrets.PAT_FOR_GOODOW_AD_SUBMODULES }}
+          TARGET_COMMIT: ${{ env.TARGET_COMMIT }}
+        run: |
+          bash .github/scripts/overwrite.sh "$TARGET_COMMIT"
+          git config --global url."https://x-access-token:${{ secrets.PAT_FOR_GOODOW_AD_SUBMODULES }}@github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: USERNAME
+          password: ${{ secrets.GHCR_TOKEN_MONO_FOR_TIANXA_GITHUB_ACTIONS }}
+      - name: Login to Tencent Cloud Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ccr.ccs.tencentyun.com
+          username: ${{ secrets.DOCKER_USERNAME_TCR }}
+          password: ${{ secrets.DOCKER_PASSWORD_TCR }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Docker metadata for mono-base
+        id: meta-base
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/goodow/mono-base
+          labels: |
+            org.opencontainers.image.source=https://github.com/larrytin/goodow-mono
+            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
+            type=raw,value=sha-${{ env.TARGET_COMMIT }}
+          bake-target: mono-base
+      - name: Docker metadata for goodow-mono
+        id: meta-mono
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/goodow/goodow-mono
+            ccr.ccs.tencentyun.com/mla-library/goodow-mono
+          labels: |
+            org.opencontainers.image.source=https://github.com/larrytin/goodow-mono
+            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
+            type=raw,value=sha-${{ env.TARGET_COMMIT }}
+          bake-target: goodow-mono
+      - name: Docker metadata for goodow-mono (CCR)
+        id: meta-mono-ccr
+        uses: docker/metadata-action@v5
+        with:
+          images: ccr.ccs.tencentyun.com/mla-library/goodow-mono
+          labels: |
+            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
+          tags: |
+            type=raw,value=latest
+          bake-target: goodow-mono
+      - name: Docker metadata for gdq-etl
+        id: meta-etl
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/goodow/gdq-etl
+          labels: |
+            org.opencontainers.image.source=https://github.com/larrytin/goodow-mono
+            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
+            type=raw,value=sha-${{ env.TARGET_COMMIT }}
+          bake-target: gdq-etl
+      - name: Docker metadata for gdq-etl (CCR)
+        id: meta-etl-ccr
+        uses: docker/metadata-action@v5
+        with:
+          images: ccr.ccs.tencentyun.com/mla-library/gdq-etl
+          labels: |
+            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
+          tags: |
+            type=raw,value=latest
+          bake-target: gdq-etl
+      - name: Docker metadata for gdq-rd
+        id: meta-rd
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/goodow/gdq-rd
+          labels: |
+            org.opencontainers.image.source=https://github.com/larrytin/goodow-mono
+            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
+            type=raw,value=sha-${{ env.TARGET_COMMIT }}
+          bake-target: gdq-rd
+      - name: Docker metadata for gdq-sim
+        id: meta-sim
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/goodow/gdq-sim
+          labels: |
+            org.opencontainers.image.source=https://github.com/larrytin/goodow-mono
+            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
+            type=raw,value=sha-${{ env.TARGET_COMMIT }}
+          bake-target: gdq-sim
+
+      # Gate: 等待 verify job 完成后再构建推送
+      # build prep 步骤已与 verify 并行执行, 仅在此处阻塞
+      - name: Wait for verify job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "⏳ Waiting for verify job to complete..."
+          while true; do
+            conclusion=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+              --jq '.jobs[] | select(.name == "verify") | .conclusion // empty')
+            if [ "$conclusion" = "success" ]; then
+              echo "✅ verify passed"
+              break
+            elif [ -n "$conclusion" ]; then
+              echo "❌ verify failed with: $conclusion"
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Prepare bake config
+        id: bake-config
+        run: |
+          {
+            echo "files<<HEREDOC"
+            echo ".devcontainer/docker-compose.yml"
+            echo "${{ steps.meta-base.outputs.bake-file }}"
+            echo "${{ steps.meta-mono.outputs.bake-file }}"
+            echo "${{ steps.meta-mono-ccr.outputs.bake-file }}"
+            echo "${{ steps.meta-etl.outputs.bake-file }}"
+            echo "${{ steps.meta-etl-ccr.outputs.bake-file }}"
+            echo "${{ steps.meta-rd.outputs.bake-file }}"
+            echo "${{ steps.meta-sim.outputs.bake-file }}"
+            echo "HEREDOC"
+          } >> $GITHUB_OUTPUT
+
+      - name: Build and push (Bake)
+        id: bake
+        continue-on-error: true
+        timeout-minutes: 90
+        uses: docker/bake-action@v6
+        with:
+          source: .
+          files: ${{ steps.bake-config.outputs.files }}
+          targets: ${{ env.BAKE_TARGETS }}
+          push: true
+          set: ${{ env.BAKE_SET }}
+
+      - name: Retry push (attempt 2)
+        if: steps.bake.outcome == 'failure'
+        id: bake2
+        continue-on-error: true
+        timeout-minutes: 60
+        uses: docker/bake-action@v6
+        with:
+          source: .
+          files: ${{ steps.bake-config.outputs.files }}
+          targets: ${{ env.BAKE_TARGETS }}
+          push: true
+          set: ${{ env.BAKE_SET }}
+
+      - name: Retry push (attempt 3)
+        if: steps.bake2.outcome == 'failure'
+        timeout-minutes: 10
+        uses: docker/bake-action@v6
+        with:
+          source: .
+          files: ${{ steps.bake-config.outputs.files }}
+          targets: ${{ env.BAKE_TARGETS }}
+          push: true
+          set: ${{ env.BAKE_SET }}
+
+      - name: Send alert
+        if: always()
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+          JOB_CONTEXT: ${{ toJson(job) }}
+          STEPS_CONTEXT: ${{ toJson(steps) }}
+          RUNNER_CONTEXT: ${{ toJson(runner) }}
+          STRATEGY_CONTEXT: ${{ toJson(strategy) }}
+          MATRIX_CONTEXT: ${{ toJson(matrix) }}
+        run: |
+          pip install -U --quiet --disable-pip-version-check goodow-workflow[telegram]
+          python -m goodow.workflow.github.send_alert
