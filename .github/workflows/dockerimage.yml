@@ -138,23 +138,12 @@ jobs:
         with:
           images: |
             ghcr.io/goodow/goodow-mono
-            ccr.ccs.tencentyun.com/mla-library/goodow-mono
           labels: |
             org.opencontainers.image.source=https://github.com/larrytin/goodow-mono
             org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
             type=raw,value=sha-${{ env.TARGET_COMMIT }}
-          bake-target: goodow-mono
-      - name: Docker metadata for goodow-mono (CCR)
-        id: meta-mono-ccr
-        uses: docker/metadata-action@v5
-        with:
-          images: ccr.ccs.tencentyun.com/mla-library/goodow-mono
-          labels: |
-            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
-          tags: |
-            type=raw,value=latest
           bake-target: goodow-mono
       - name: Docker metadata for gdq-etl
         id: meta-etl
@@ -167,16 +156,6 @@ jobs:
           tags: |
             type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
             type=raw,value=sha-${{ env.TARGET_COMMIT }}
-          bake-target: gdq-etl
-      - name: Docker metadata for gdq-etl (CCR)
-        id: meta-etl-ccr
-        uses: docker/metadata-action@v5
-        with:
-          images: ccr.ccs.tencentyun.com/mla-library/gdq-etl
-          labels: |
-            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
-          tags: |
-            type=raw,value=latest
           bake-target: gdq-etl
       - name: Docker metadata for gdq-rd
         id: meta-rd
@@ -231,9 +210,7 @@ jobs:
             echo ".devcontainer/docker-compose.yml"
             echo "${{ steps.meta-base.outputs.bake-file }}"
             echo "${{ steps.meta-mono.outputs.bake-file }}"
-            echo "${{ steps.meta-mono-ccr.outputs.bake-file }}"
             echo "${{ steps.meta-etl.outputs.bake-file }}"
-            echo "${{ steps.meta-etl-ccr.outputs.bake-file }}"
             echo "${{ steps.meta-rd.outputs.bake-file }}"
             echo "${{ steps.meta-sim.outputs.bake-file }}"
             echo "HEREDOC"
@@ -241,8 +218,6 @@ jobs:
 
       - name: Build and push (Bake)
         id: bake
-        continue-on-error: true
-        timeout-minutes: 90
         uses: docker/bake-action@v6
         with:
           source: .
@@ -251,29 +226,23 @@ jobs:
           push: true
           set: ${{ env.BAKE_SET }}
 
-      - name: Retry push (attempt 2)
-        if: steps.bake.outcome == 'failure'
-        id: bake2
-        continue-on-error: true
-        timeout-minutes: 60
-        uses: docker/bake-action@v6
-        with:
-          source: .
-          files: ${{ steps.bake-config.outputs.files }}
-          targets: ${{ env.BAKE_TARGETS }}
-          push: true
-          set: ${{ env.BAKE_SET }}
+      - name: Sync Images to Tencent Cloud CCR via Skopeo
+        run: |
+          # 检查并安装 skopeo（防万一）
+          if ! command -v skopeo &> /dev/null; then
+            echo "Installing skopeo..."
+            sudo apt-get update && sudo apt-get install -y skopeo
+          fi
 
-      - name: Retry push (attempt 3)
-        if: steps.bake2.outcome == 'failure'
-        timeout-minutes: 10
-        uses: docker/bake-action@v6
-        with:
-          source: .
-          files: ${{ steps.bake-config.outputs.files }}
-          targets: ${{ env.BAKE_TARGETS }}
-          push: true
-          set: ${{ env.BAKE_SET }}
+          echo "🚀 Syncing goodow-mono..."
+          echo "🚀 Syncing latest tags for mono branch..."
+          skopeo copy --retry-times 5 \
+            docker://ghcr.io/goodow/goodow-mono:latest \
+            docker://ccr.ccs.tencentyun.com/mla-library/goodow-mono:latest
+          skopeo copy --retry-times 5 \
+            docker://ghcr.io/goodow/gdq-etl:latest \
+            docker://ccr.ccs.tencentyun.com/mla-library/gdq-etl:latest
+          echo "🎉 All images successfully synced!"
 
       - name: Send alert
         if: always()
