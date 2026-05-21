@@ -226,23 +226,47 @@ jobs:
           push: true
           set: ${{ env.BAKE_SET }}
 
-      - name: Sync Images to Tencent Cloud CCR via Skopeo
+      - name: Sync Images to Tencent Cloud CCR via image-syncer
+        env:
+          GHCR_USERNAME: USERNAME
+          GHCR_PASSWORD: ${{ secrets.GHCR_TOKEN_MONO_FOR_TIANXA_GITHUB_ACTIONS }}
+          CCR_USERNAME: ${{ secrets.DOCKER_USERNAME_TCR }}
+          CCR_PASSWORD: ${{ secrets.DOCKER_PASSWORD_TCR }}
         run: |
-          # 检查并安装 skopeo（防万一）
-          if ! command -v skopeo &> /dev/null; then
-            echo "Installing skopeo..."
-            sudo apt-get update && sudo apt-get install -y skopeo
+          # 检查并安装 image-syncer
+          if ! command -v image-syncer &> /dev/null; then
+            echo "Installing image-syncer..."
+            VERSION=$(curl -s https://api.github.com/repos/AliyunContainerService/image-syncer/releases/latest | jq -r .tag_name)
+            echo "Latest version is $VERSION"
+            curl -LO "https://github.com/AliyunContainerService/image-syncer/releases/download/${VERSION}/image-syncer-${VERSION}-linux-amd64.tar.gz"
+            tar -xzf "image-syncer-${VERSION}-linux-amd64.tar.gz"
+            sudo mv image-syncer /usr/local/bin/
           fi
 
-          echo "🚀 Syncing goodow-mono..."
-          echo "🚀 Syncing latest tags for mono branch..."
-          skopeo copy --retry-times 5 \
-            docker://ghcr.io/goodow/goodow-mono:latest \
-            docker://ccr.ccs.tencentyun.com/mla-library/goodow-mono:latest
-          skopeo copy --retry-times 5 \
-            docker://ghcr.io/goodow/gdq-etl:latest \
-            docker://ccr.ccs.tencentyun.com/mla-library/gdq-etl:latest
-          echo "🎉 All images successfully synced!"
+          # 生成凭证配置文件 auth.json (支持通过环境变量在运行时解析)
+          cat << 'EOF' > auth.json
+          {
+            "ghcr.io": {
+              "username": "${GHCR_USERNAME}",
+              "password": "${GHCR_PASSWORD}"
+            },
+            "ccr.ccs.tencentyun.com": {
+              "username": "${CCR_USERNAME}",
+              "password": "${CCR_PASSWORD}"
+            }
+          }
+          EOF
+
+          # 生成同步映射规则 images.json
+          cat << 'EOF' > images.json
+          {
+            "ghcr.io/goodow/goodow-mono:latest": "ccr.ccs.tencentyun.com/mla-library/goodow-mono:latest",
+            "ghcr.io/goodow/gdq-etl:latest": "ccr.ccs.tencentyun.com/mla-library/gdq-etl:latest"
+          }
+          EOF
+
+          # 执行并发增量同步 (proc=2, 并行处理两个镜像同步流)
+          image-syncer --proc=20 --auth=./auth.json --images=./images.json --retries=5
 
       - name: Send alert
         if: always()
