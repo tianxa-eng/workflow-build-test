@@ -61,7 +61,7 @@ jobs:
   #   mono-base
   #     ├─ goodow-mono   (FROM mono-base, uv sync 全 workspace + dev)
   #     └─ gdq-etl       (FROM mono-base, uv sync --package gdq-etl 子图; 与 goodow-mono 并行)
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
     env:
       BAKE_TARGETS: mono-base,goodow-mono,gdq-etl,gdq-rd,gdq-sim
@@ -113,6 +113,11 @@ jobs:
           registry: ghcr.io
           username: USERNAME
           password: ${{ secrets.GHCR_TOKEN_MONO_FOR_TIANXA_GITHUB_ACTIONS }}
+#      - name: Login to Docker Hub
+#        uses: docker/login-action@v3
+#        with:
+#          username: ${{ secrets.DOCKER_USERNAME_HUB }}
+#          password: ${{ secrets.DOCKER_PASSWORD_HUB }}
       - name: Login to Tencent Cloud Container Registry
         uses: docker/login-action@v3
         with:
@@ -136,8 +141,7 @@ jobs:
         id: meta-mono
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ghcr.io/goodow/goodow-mono
+          images: ghcr.io/goodow/goodow-mono
           labels: |
             org.opencontainers.image.source=https://github.com/larrytin/goodow-mono
             org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
@@ -273,10 +277,7 @@ jobs:
         env:
           GITHUB_CONTEXT: ${{ toJson(github) }}
           JOB_CONTEXT: ${{ toJson(job) }}
-          STEPS_CONTEXT: ${{ toJson(steps) }}
           RUNNER_CONTEXT: ${{ toJson(runner) }}
-          STRATEGY_CONTEXT: ${{ toJson(strategy) }}
-          MATRIX_CONTEXT: ${{ toJson(matrix) }}
         run: |
           pip install -U --quiet --disable-pip-version-check goodow-workflow[telegram]
           python -m goodow.workflow.github.send_alert
