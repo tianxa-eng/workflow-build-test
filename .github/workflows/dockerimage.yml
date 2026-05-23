@@ -33,9 +33,9 @@ jobs:
       - name: Init and update submodules
         env:
           PAT_FOR_GOODOW_AD_SUBMODULES: ${{ secrets.PAT_FOR_GOODOW_AD_SUBMODULES }}
-          TARGET_COMMIT: ${{ env.TARGET_COMMIT }}
+          MONO_REPO: ${{ secrets.MONO_REPO }}
         run: |
-          bash .github/scripts/overwrite.sh "$TARGET_COMMIT"
+          bash .github/scripts/overwrite.sh "${{ env.TARGET_COMMIT }}"
           git config --global url."https://x-access-token:${{ secrets.PAT_FOR_GOODOW_AD_SUBMODULES }}@github.com/".insteadOf "git@github.com:"
           git submodule update --init --recursive
 
@@ -101,9 +101,9 @@ jobs:
       - name: Init and update submodules
         env:
           PAT_FOR_GOODOW_AD_SUBMODULES: ${{ secrets.PAT_FOR_GOODOW_AD_SUBMODULES }}
-          TARGET_COMMIT: ${{ env.TARGET_COMMIT }}
+          MONO_REPO: ${{ secrets.MONO_REPO }}
         run: |
-          bash .github/scripts/overwrite.sh "$TARGET_COMMIT"
+          bash .github/scripts/overwrite.sh "${{ env.TARGET_COMMIT }}"
           git config --global url."https://x-access-token:${{ secrets.PAT_FOR_GOODOW_AD_SUBMODULES }}@github.com/".insteadOf "git@github.com:"
           git submodule update --init --recursive
 
@@ -118,10 +118,10 @@ jobs:
 #        with:
 #          username: ${{ secrets.DOCKER_USERNAME_HUB }}
 #          password: ${{ secrets.DOCKER_PASSWORD_HUB }}
-      - name: Login to Tencent Cloud Container Registry
+      - name: Login to TCR Registry
         uses: docker/login-action@v3
         with:
-          registry: ccr.ccs.tencentyun.com
+          registry: ${{ secrets.TCR_REGISTRY }}
           username: ${{ secrets.DOCKER_USERNAME_TCR }}
           password: ${{ secrets.DOCKER_PASSWORD_TCR }}
       - uses: docker/setup-buildx-action@v3
@@ -131,7 +131,7 @@ jobs:
         with:
           images: ghcr.io/goodow/mono-base
           labels: |
-            org.opencontainers.image.source=https://github.com/larrytin/goodow-mono
+            org.opencontainers.image.source=https://github.com/${{ env.MONO_REPO }}
             org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
@@ -143,7 +143,7 @@ jobs:
         with:
           images: ghcr.io/goodow/goodow-mono
           labels: |
-            org.opencontainers.image.source=https://github.com/larrytin/goodow-mono
+            org.opencontainers.image.source=https://github.com/${{ env.MONO_REPO }}
             org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
@@ -155,7 +155,7 @@ jobs:
         with:
           images: ghcr.io/goodow/gdq-etl
           labels: |
-            org.opencontainers.image.source=https://github.com/larrytin/goodow-mono
+            org.opencontainers.image.source=https://github.com/${{ env.MONO_REPO }}
             org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
@@ -167,7 +167,7 @@ jobs:
         with:
           images: ghcr.io/goodow/gdq-rd
           labels: |
-            org.opencontainers.image.source=https://github.com/larrytin/goodow-mono
+            org.opencontainers.image.source=https://github.com/${{ env.MONO_REPO }}
             org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
@@ -179,7 +179,7 @@ jobs:
         with:
           images: ghcr.io/goodow/gdq-sim
           labels: |
-            org.opencontainers.image.source=https://github.com/larrytin/goodow-mono
+            org.opencontainers.image.source=https://github.com/${{ env.MONO_REPO }}
             org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
@@ -230,21 +230,33 @@ jobs:
           push: true
           set: ${{ env.BAKE_SET }}
 
-      - name: Sync Images to Tencent Cloud CCR via image-syncer
+      - name: Sync Images to TCR via image-syncer
         env:
           GHCR_USERNAME: USERNAME
           GHCR_PASSWORD: ${{ secrets.GHCR_TOKEN_MONO_FOR_TIANXA_GITHUB_ACTIONS }}
-          CCR_USERNAME: ${{ secrets.DOCKER_USERNAME_TCR }}
-          CCR_PASSWORD: ${{ secrets.DOCKER_PASSWORD_TCR }}
+          TCR_USERNAME: ${{ secrets.DOCKER_USERNAME_TCR }}
+          TCR_PASSWORD: ${{ secrets.DOCKER_PASSWORD_TCR }}
         run: |
           # 检查并安装 image-syncer
           if ! command -v image-syncer &> /dev/null; then
             echo "Installing image-syncer..."
-            VERSION=$(curl -s https://api.github.com/repos/AliyunContainerService/image-syncer/releases/latest | jq -r .tag_name)
-            echo "Latest version is $VERSION"
-            curl -LO "https://github.com/AliyunContainerService/image-syncer/releases/download/${VERSION}/image-syncer-${VERSION}-linux-amd64.tar.gz"
-            tar -xzf "image-syncer-${VERSION}-linux-amd64.tar.gz"
-            sudo mv image-syncer /usr/local/bin/
+            for i in {1..5}; do
+              VERSION=$(curl -sS --retry 5 --retry-delay 2 https://api.github.com/repos/AliyunContainerService/image-syncer/releases/latest | jq -r .tag_name 2>/dev/null || true)
+              if [ -n "$VERSION" ] && [ "$VERSION" != "null" ]; then
+                echo "Latest version is $VERSION"
+                if curl -fLO --retry 5 --retry-delay 2 "https://github.com/AliyunContainerService/image-syncer/releases/download/${VERSION}/image-syncer-${VERSION}-linux-amd64.tar.gz"; then
+                  tar -xzf "image-syncer-${VERSION}-linux-amd64.tar.gz"
+                  sudo mv image-syncer /usr/local/bin/
+                  break
+                fi
+              fi
+              echo "Attempt $i failed to download image-syncer. Retrying in 10 seconds..."
+              sleep 10
+            done
+            if ! command -v image-syncer &> /dev/null; then
+              echo "Error: Failed to install image-syncer after 5 attempts."
+              exit 1
+            fi
           fi
 
           # 生成凭证配置文件 auth.json (支持通过环境变量在运行时解析)
@@ -254,9 +266,9 @@ jobs:
               "username": "${GHCR_USERNAME}",
               "password": "${GHCR_PASSWORD}"
             },
-            "ccr.ccs.tencentyun.com": {
-              "username": "${CCR_USERNAME}",
-              "password": "${CCR_PASSWORD}"
+            "${{ secrets.TCR_REGISTRY }}": {
+              "username": "${TCR_USERNAME}",
+              "password": "${TCR_PASSWORD}"
             }
           }
           EOF
@@ -264,8 +276,9 @@ jobs:
           # 生成同步映射规则 images.json
           cat << 'EOF' > images.json
           {
-            "ghcr.io/goodow/goodow-mono:latest": "ccr.ccs.tencentyun.com/mla-library/goodow-mono:latest",
-            "ghcr.io/goodow/gdq-etl:latest": "ccr.ccs.tencentyun.com/mla-library/gdq-etl:latest"
+            "ghcr.io/goodow/goodow-mono:latest": "${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_OWNER }}/goodow-mono:latest",
+            "ghcr.io/goodow/gdq-etl:latest": "${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_OWNER }}/gdq-etl:latest",
+            "ghcr.io/goodow/gdq-rd:latest": "${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_OWNER }}/gdq-rd:latest"
           }
           EOF
 
