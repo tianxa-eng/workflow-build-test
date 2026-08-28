@@ -1,10 +1,20 @@
 name: Run in Container
 on:
   workflow_dispatch:
+    inputs:
+      hold_minutes:
+        description: '节点保持在线的分钟数 (GitHub 单 job 上限 360)'
+        required: false
+        default: '330'
+      drain_lead_minutes:
+        description: '到期前多少分钟开始主动排空 (给 Pod 的 preStop 快照留出时间)'
+        required: false
+        default: '15'
 
 jobs:
   run-in-container:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     container:
       image: ghcr.io/goodow/k3s
       credentials:
@@ -14,37 +24,167 @@ jobs:
         PIP_DISABLE_PIP_VERSION_CHECK: "1"
       options: >-
         --privileged
+        --cgroupns=host
+      # --cgroupns=host 是必需的, 不是优化项:
+      # runner 宿主机是 cgroup v2 (kernel 6.17-azure)。docker 在 cgroup v2 下默认
+      # cgroupns=private, 容器自己的 scope 就是它的 cgroup 命名空间根; 而下面又把
+      # 宿主机的 /sys/fs/cgroup 整棵树挂了进来。两者不一致时 runc 无法把 PID 写进
+      # cgroup, 症状是 Pod 永远 ContainerCreating, 报 cgroup.procs: no such file or
+      # directory。gha-assert pre 会直接检出这一项。
       volumes:
         # cgroups（跑 containerd/kubelet 往往需要）
         - /sys/fs/cgroup:/sys/fs/cgroup:rw
-        # 内核模块（iptables/nf_conntrack 等场景可能用得上）
+        # 内核模块（wireguard-native 后端必需，modprobe wireguard 要读这里）
         - /lib/modules:/lib/modules:ro
+        # 实测确认此挂载是必需的: containerd 的 overlayfs snapshotter 落在这里,
+        # 没有它就是 overlay-on-overlay。代价是它会遮蔽镜像里预建的静态 CNI 目录,
+        # 由 gha-assert pre 在挂载之后重建。
         - /var/lib/rancher/k3s:/var/lib/rancher/k3s
 
-    steps:
-      - name: Check Public IP
-        run: |
-          echo "Public IP:"
-          curl -s ifconfig.me
-          echo ""
+    env:
+      K3S_NODE_NAME: gha-${{ github.run_id }}-${{ github.run_attempt }}
+      # 经环境变量传递而不是直接插值进 run 脚本，避免 ${{ }} 展开成 shell 代码
+      HOLD_MINUTES: ${{ inputs.hold_minutes }}
+      DRAIN_LEAD_MINUTES: ${{ inputs.drain_lead_minutes }}
 
+    steps:
+      # ── 1. 起 agent 之前断言静态前提 ────────────────────────────────────────
+      - name: Preflight
+        shell: bash
+        run: |
+          PUBIP=$(curl -s --max-time 15 https://ifconfig.me)
+          echo "PUBIP=${PUBIP}" >> "$GITHUB_ENV"
+          echo "本节点出口公网 IP = ${PUBIP} (Azure 动态地址, 每次 dispatch 都不同)"
+          gha-assert pre
+
+      # ── 2. 启动 agent ────────────────────────────────────────────────────
+      # --node-external-ip 只写入 status.addresses, 不会生成 public-ip-overwrite 注解
+      # (集群的 flannel-external-ip 是关闭的)。保留它纯粹是为了 kubectl get nodes -o wide
+      # 能一眼看到这个 runner 的 Azure 出口 IP。跨节点隧道靠 WireGuard roaming 自行建立,
+      # 不需要任何注解 —— 实测确认。
       - name: Start k3s agent (background)
         shell: bash
         env:
           K3S_URL: ${{ secrets.K3S_URL }}
           K3S_TOKEN: ${{ secrets.K3S_TOKEN }}
-          K3S_NODE_NAME: gha-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
-
-          echo "Starting k3s agent, node=${K3S_NODE_NAME}"
+          echo "Starting k3s agent, node=${K3S_NODE_NAME}, external-ip=${PUBIP}"
           nohup /bin/k3s agent \
-            --node-name "${K3S_NODE_NAME}" --node-taint "no-external-ip=true:NoExecute" \
+            --node-name "${K3S_NODE_NAME}" \
+            --node-external-ip "${PUBIP}" \
+            --node-label "ephemeral-node=gha" \
+            --node-taint "ephemeral-node=gha:NoExecute" \
             > /var/log/k3s-agent.log 2>&1 &
+          # 落 PID: 最后一步的 watchdog 要靠它判断 agent 是否还活着。
+          # PID 1 是 tail -f /dev/null, 没有任何进程监管, agent 死了 job 也不会知道。
+          echo $! > /run/k3s-agent.pid
 
-      - run: cloudflared tunnel --no-autoupdate run --token ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }} &
-      - run: /usr/sbin/sshd -p 31220 && sleep infinity
+      # ── 3. 顶住 Azure SNAT 约 4 分钟的 UDP 映射老化 ─────────────────────────
+      # Traefik 是主动向本节点 Pod 发起 TCP 连接的一方, 映射一旦老化它就再也发不进来,
+      # 症状是「刚部署能访问, 放一会儿就 504」。
+      - name: Hold flannel-wg NAT mappings open
+        shell: bash
+        run: nohup wg-keepalive 25 > /var/log/wg-keepalive.log 2>&1 &
 
-defaults:
-  run:
-    shell: bash
+      # ── 4. agent 起来之后断言网络前提 ───────────────────────────────────────
+      - name: Postflight
+        shell: bash
+        run: gha-assert post
+
+      # ── 5. 人工排查通道(只在需要手工进 runner 时才有意义, 不需要就整段删掉)──
+      - name: Start cloudflared tunnel
+        shell: bash
+        env:
+          TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+        run: cloudflared tunnel --no-autoupdate run --token "${TUNNEL_TOKEN}" &
+
+      - name: Start sshd
+        shell: bash
+        run: |
+          /usr/sbin/sshd -p 31220
+          echo "sshd 已监听 31220"
+
+      # ── 6. 配 kubeconfig(自排空 + 自注销用) ───────────────────────────────
+      # runner 手上的 K3S_TOKEN 是 agent join token, 不能调 apiserver。这里用一个
+      # 权限刚好够 "cordon + evict + 删自己" 的 ServiceAccount token, 由
+      # k8s-manifests/k8s/k3s/gha/node-lifecycle.yaml 签发:
+      #   kubectl -n kube-system get secret gha-node-lifecycle-token \
+      #     -o jsonpath='{.data.token}' | base64 -d
+      # 未配置该 secret 时整个生命周期治理降级为"只靠集群侧 reaper", 不影响主链路。
+      - name: Configure kubeconfig for self-drain
+        shell: bash
+        env:
+          K3S_URL: ${{ secrets.K3S_URL }}
+          K3S_DRAIN_TOKEN: ${{ secrets.K3S_DRAIN_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -z "${K3S_DRAIN_TOKEN}" ]; then
+            echo "::warning::未配置 K3S_DRAIN_TOKEN, 跳过自排空/自注销; 依赖集群侧 gha-node-reaper 兜底"
+            exit 0
+          fi
+          CA=/var/lib/rancher/k3s/agent/server-ca.crt   # agent join 成功后由 k3s 自己写出
+          for _ in $(seq 1 30); do [ -f "$CA" ] && break; sleep 2; done
+          export KUBECONFIG=/root/.kube/config
+          mkdir -p /root/.kube
+          kubectl config set-cluster k3s --server="${K3S_URL}" --certificate-authority="$CA" --embed-certs=true
+          kubectl config set-credentials drainer --token="${K3S_DRAIN_TOKEN}"
+          kubectl config set-context k3s --cluster=k3s --user=drainer
+          kubectl config use-context k3s
+          kubectl get node "${K3S_NODE_NAME}" -o name
+          echo "KUBECONFIG=${KUBECONFIG}" >> "$GITHUB_ENV"
+
+      # ── 7. 看门狗 + 到期前主动排空 ─────────────────────────────────────────
+      # 取代原来的 sleep。sleep 有两个问题:
+      #   a) k3s agent 崩了它照睡不误 —— 节点静默变 NotReady, job 却一路绿到底,
+      #      白占一个 runner, 而且事后没有任何线索指向"是 agent 挂了"。
+      #   b) 到点时容器被直接杀掉, Pod 没有优雅终止, preStop 不触发 ->
+      #      hostPath 里的东西全丢, 且要等 5 分钟 unreachable 容忍期才重新调度。
+      # 换成: 每 10s 探活, 到期前 DRAIN_LEAD_MINUTES 主动 cordon + drain, 让 Pod
+      # 走 eviction API 优雅迁走(尊重 PDB, 触发 preStop), 最后删掉自己的 Node 对象。
+      - name: Hold the node online (watchdog + graceful drain)
+        shell: bash
+        run: |
+          set -uo pipefail
+          K3S_PID=$(cat /run/k3s-agent.pid)
+
+          # 自注销: 正常到期、agent 崩溃、job 被 cancel 三条路径都要把 Node 对象删掉。
+          # 留着它 = 一个永不握手的死 wg peer(每个活节点都会持续向它发 keepalive)。
+          # cancel 时 GitHub 只给几秒宽限, trap 不一定跑得完 —— 所以这只是 best-effort,
+          # 保底是集群侧的 gha-node-reaper CronJob。
+          cleanup() {
+            [ -n "${KUBECONFIG:-}" ] || return 0
+            echo "── 注销节点 ${K3S_NODE_NAME} ──"
+            kubectl delete node "${K3S_NODE_NAME}" --ignore-not-found --timeout=30s || true
+          }
+          trap cleanup EXIT INT TERM
+
+          DEADLINE=$(( $(date +%s) + HOLD_MINUTES * 60 ))
+          DRAIN_AT=$(( DEADLINE - DRAIN_LEAD_MINUTES * 60 ))
+          echo "节点保持在线至 $(date -d "@${DEADLINE}" -u +%FT%TZ), 于 $(date -d "@${DRAIN_AT}" -u +%FT%TZ) 开始排空"
+
+          while :; do
+            if ! kill -0 "${K3S_PID}" 2>/dev/null; then
+              echo "::error::k3s agent (pid ${K3S_PID}) 已退出, 节点即将变 NotReady, 提前结束 job"
+              tail -80 /var/log/k3s-agent.log
+              exit 1
+            fi
+            [ "$(date +%s)" -ge "${DRAIN_AT}" ] && break
+            sleep 10
+          done
+
+          if [ -z "${KUBECONFIG:-}" ]; then
+            echo "::warning::无 kubeconfig, 无法排空; Pod 将在容器被杀时硬中断"
+            sleep $(( DEADLINE - $(date +%s) ))
+            exit 0
+          fi
+
+          echo "── cordon: 停止新 Pod 落到本节点 ──"
+          kubectl cordon "${K3S_NODE_NAME}"
+          echo "── drain: 走 eviction API 优雅迁走(尊重 PDB, 触发 preStop) ──"
+          # --timeout 必须小于剩余时间, 否则 drain 还没结束容器就被杀了
+          kubectl drain "${K3S_NODE_NAME}" \
+            --ignore-daemonsets --delete-emptydir-data --force \
+            --timeout=$(( DRAIN_LEAD_MINUTES * 60 - 60 ))s || \
+            echo "::warning::drain 未在预算内完成(可能被 PDB 挡住), 继续退出"
+          echo "── 排空完毕 ──"
