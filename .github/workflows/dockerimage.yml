@@ -26,7 +26,7 @@ jobs:
           COMMIT_MSG="${{ github.event.head_commit.message }}"
           TARGET_COMMIT=$(echo "$COMMIT_MSG" | grep -oE '@[0-9a-fA-F]+' | sed 's/@//')
           if [ -z "$TARGET_COMMIT" ]; then
-            TARGET_COMMIT="master"
+            TARGET_COMMIT="main"
           fi
           echo "TARGET_COMMIT=$TARGET_COMMIT" >> $GITHUB_ENV
 
@@ -60,11 +60,12 @@ jobs:
   # Build DAG (bake 自动并行):
   #   mono-base
   #     ├─ goodow-mono   (FROM mono-base, uv sync 全 workspace + dev)
-  #     └─ gdq-etl       (FROM mono-base, uv sync --package gdq-etl 子图; 与 goodow-mono 并行)
+  #     ├─ gdq-etl       (FROM mono-base, uv sync --package gdq-etl 子图; 与 goodow-mono 并行)
+  #     └─ gdq-infra     (FROM mono-base, uv sync --package gdq-infra 子图; 同上)
   build-and-push:
     runs-on: ubuntu-latest
     env:
-      BAKE_TARGETS: mono-base,goodow-mono,gdq-etl,gdq-rd,gdq-sim
+      BAKE_TARGETS: mono-base,goodow-mono,gdq-etl,gdq-infra,gdq-rd,gdq-sim
       BAKE_SET: |
         *.context=.
         mono-base.context=.devcontainer/mono-base
@@ -74,6 +75,8 @@ jobs:
         goodow-mono.cache-to=type=registry,ref=ghcr.io/goodow/goodow-mono:build-cache,mode=max
         gdq-etl.cache-from=type=registry,ref=ghcr.io/goodow/gdq-etl:build-cache
         gdq-etl.cache-to=type=registry,ref=ghcr.io/goodow/gdq-etl:build-cache,mode=max
+        gdq-infra.cache-from=type=registry,ref=ghcr.io/goodow/gdq-infra:build-cache
+        gdq-infra.cache-to=type=registry,ref=ghcr.io/goodow/gdq-infra:build-cache,mode=max
         gdq-rd.cache-from=type=registry,ref=ghcr.io/goodow/gdq-rd:build-cache
         gdq-rd.cache-to=type=registry,ref=ghcr.io/goodow/gdq-rd:build-cache,mode=max
         gdq-sim.cache-from=type=registry,ref=ghcr.io/goodow/gdq-sim:build-cache
@@ -94,7 +97,7 @@ jobs:
           COMMIT_MSG="${{ github.event.head_commit.message }}"
           TARGET_COMMIT=$(echo "$COMMIT_MSG" | grep -oE '@[0-9a-fA-F]+' | sed 's/@//')
           if [ -z "$TARGET_COMMIT" ]; then
-            TARGET_COMMIT="master"
+            TARGET_COMMIT="main"
           fi
           echo "TARGET_COMMIT=$TARGET_COMMIT" >> $GITHUB_ENV
 
@@ -161,6 +164,18 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
             type=raw,value=sha-${{ env.TARGET_COMMIT }}
           bake-target: gdq-etl
+      - name: Docker metadata for gdq-infra
+        id: meta-infra
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/goodow/gdq-infra
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ env.MONO_REPO }}
+            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
+            type=raw,value=sha-${{ env.TARGET_COMMIT }}
+          bake-target: gdq-infra
       - name: Docker metadata for gdq-rd
         id: meta-rd
         uses: docker/metadata-action@v5
@@ -215,6 +230,7 @@ jobs:
             echo "${{ steps.meta-base.outputs.bake-file }}"
             echo "${{ steps.meta-mono.outputs.bake-file }}"
             echo "${{ steps.meta-etl.outputs.bake-file }}"
+            echo "${{ steps.meta-infra.outputs.bake-file }}"
             echo "${{ steps.meta-rd.outputs.bake-file }}"
             echo "${{ steps.meta-sim.outputs.bake-file }}"
             echo "HEREDOC"
@@ -278,6 +294,7 @@ jobs:
           {
             "ghcr.io/goodow/goodow-mono:latest": "${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_OWNER }}/goodow-mono:latest",
             "ghcr.io/goodow/gdq-etl:latest": "${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_OWNER }}/gdq-etl:latest",
+            "ghcr.io/goodow/gdq-infra:latest": "${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_OWNER }}/gdq-infra:latest",
             "ghcr.io/goodow/gdq-rd:latest": "${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_OWNER }}/gdq-rd:latest"
           }
           EOF
