@@ -30,7 +30,7 @@ jobs:
         with:
           registry: ghcr.io
           username: USERNAME
-          password: ${{ secrets.GHCR_TOKEN_FOR_TIANXA }}
+          password: ${{ secrets.GHCR_TOKEN_MONO_FOR_TIANXA_GITHUB_ACTIONS }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"

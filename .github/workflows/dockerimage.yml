@@ -32,11 +32,11 @@ jobs:
 
       - name: Init and update submodules
         env:
-          PAT_FOR_GOODOW_AD_SUBMODULES: ${{ secrets.PAT_FOR_GOODOW_AD_SUBMODULES }}
+          PAT_FOR_GOODOW_MONO_SUBMODULES: ${{ secrets.PAT_FOR_GOODOW_MONO_SUBMODULES }}
           MONO_REPO: ${{ secrets.MONO_REPO }}
         run: |
           bash .github/scripts/overwrite.sh "${{ env.TARGET_COMMIT }}"
-          git config --global url."https://x-access-token:${{ secrets.PAT_FOR_GOODOW_AD_SUBMODULES }}@github.com/".insteadOf "git@github.com:"
+          git config --global url."https://x-access-token:${{ secrets.PAT_FOR_GOODOW_MONO_SUBMODULES }}@github.com/".insteadOf "git@github.com:"
           git submodule update --init --recursive
 
       - name: Install uv
@@ -103,11 +103,11 @@ jobs:
 
       - name: Init and update submodules
         env:
-          PAT_FOR_GOODOW_AD_SUBMODULES: ${{ secrets.PAT_FOR_GOODOW_AD_SUBMODULES }}
+          PAT_FOR_GOODOW_MONO_SUBMODULES: ${{ secrets.PAT_FOR_GOODOW_MONO_SUBMODULES }}
           MONO_REPO: ${{ secrets.MONO_REPO }}
         run: |
           bash .github/scripts/overwrite.sh "${{ env.TARGET_COMMIT }}"
-          git config --global url."https://x-access-token:${{ secrets.PAT_FOR_GOODOW_AD_SUBMODULES }}@github.com/".insteadOf "git@github.com:"
+          git config --global url."https://x-access-token:${{ secrets.PAT_FOR_GOODOW_MONO_SUBMODULES }}@github.com/".insteadOf "git@github.com:"
           git submodule update --init --recursive
 
       - name: Login to GitHub Container Registry

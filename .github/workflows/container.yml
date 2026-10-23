@@ -70,7 +70,7 @@ jobs:
       image: ghcr.io/goodow/k3s
       credentials:
         username: ${{ github.actor }}
-        password: ${{ secrets.GHCR_TOKEN_FOR_TIANXA }}
+        password: ${{ secrets.GHCR_TOKEN_MONO_FOR_TIANXA_GITHUB_ACTIONS }}
       options: >-
         --privileged
         --cgroupns=host
