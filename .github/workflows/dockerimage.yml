@@ -22,8 +22,10 @@ jobs:
       - uses: actions/checkout@v6
       - name: Extract Target Commit
         id: extract
+        env:
+          # 经环境变量而不是 ${{ }} 内插进脚本: 提交说明是外部输入, 内插会被当成 shell 执行
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
-          COMMIT_MSG="${{ github.event.head_commit.message }}"
           TARGET_COMMIT=$(echo "$COMMIT_MSG" | grep -oE '@[0-9a-fA-F]+' | sed 's/@//')
           if [ -z "$TARGET_COMMIT" ]; then
             TARGET_COMMIT="main"
@@ -62,6 +64,7 @@ jobs:
   #     ├─ goodow-mono   (FROM mono-base, uv sync 全 workspace + dev)
   #     ├─ gdq-etl       (FROM mono-base, uv sync --package gdq-etl 子图; 与 goodow-mono 并行)
   #     └─ gdq-infra     (FROM mono-base, uv sync --package gdq-infra 子图; 同上)
+  # 这里只推 sha-<完整 sha>; :latest 由下面的 promote-latest 移, 见那里
   build-and-push:
     runs-on: ubuntu-latest
     env:
@@ -93,8 +96,10 @@ jobs:
       - uses: actions/checkout@v6
       - name: Extract Target Commit
         id: extract
+        env:
+          # 经环境变量而不是 ${{ }} 内插进脚本: 提交说明是外部输入, 内插会被当成 shell 执行
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
-          COMMIT_MSG="${{ github.event.head_commit.message }}"
           TARGET_COMMIT=$(echo "$COMMIT_MSG" | grep -oE '@[0-9a-fA-F]+' | sed 's/@//')
           if [ -z "$TARGET_COMMIT" ]; then
             TARGET_COMMIT="main"
@@ -121,12 +126,6 @@ jobs:
 #        with:
 #          username: ${{ secrets.DOCKER_USERNAME_HUB }}
 #          password: ${{ secrets.DOCKER_PASSWORD_HUB }}
-      - name: Login to TCR Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.TCR_REGISTRY }}
-          username: ${{ secrets.DOCKER_USERNAME_TCR }}
-          password: ${{ secrets.DOCKER_PASSWORD_TCR }}
       - uses: docker/setup-buildx-action@v3
       - name: Docker metadata for mono-base
         id: meta-base
@@ -134,11 +133,9 @@ jobs:
         with:
           images: ghcr.io/goodow/mono-base
           labels: |
-            org.opencontainers.image.source=https://github.com/${{ env.MONO_REPO }}
-            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
+            org.opencontainers.image.revision=${{ env.SOURCE_COMMIT }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
-            type=raw,value=sha-${{ env.TARGET_COMMIT }}
+            type=raw,value=sha-${{ env.SOURCE_COMMIT }}
           bake-target: mono-base
       - name: Docker metadata for goodow-mono
         id: meta-mono
@@ -146,11 +143,9 @@ jobs:
         with:
           images: ghcr.io/goodow/goodow-mono
           labels: |
-            org.opencontainers.image.source=https://github.com/${{ env.MONO_REPO }}
-            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
+            org.opencontainers.image.revision=${{ env.SOURCE_COMMIT }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
-            type=raw,value=sha-${{ env.TARGET_COMMIT }}
+            type=raw,value=sha-${{ env.SOURCE_COMMIT }}
           bake-target: goodow-mono
       - name: Docker metadata for gdq-etl
         id: meta-etl
@@ -158,11 +153,9 @@ jobs:
         with:
           images: ghcr.io/goodow/gdq-etl
           labels: |
-            org.opencontainers.image.source=https://github.com/${{ env.MONO_REPO }}
-            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
+            org.opencontainers.image.revision=${{ env.SOURCE_COMMIT }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
-            type=raw,value=sha-${{ env.TARGET_COMMIT }}
+            type=raw,value=sha-${{ env.SOURCE_COMMIT }}
           bake-target: gdq-etl
       - name: Docker metadata for gdq-infra
         id: meta-infra
@@ -170,11 +163,9 @@ jobs:
         with:
           images: ghcr.io/goodow/gdq-infra
           labels: |
-            org.opencontainers.image.source=https://github.com/${{ env.MONO_REPO }}
-            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
+            org.opencontainers.image.revision=${{ env.SOURCE_COMMIT }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
-            type=raw,value=sha-${{ env.TARGET_COMMIT }}
+            type=raw,value=sha-${{ env.SOURCE_COMMIT }}
           bake-target: gdq-infra
       - name: Docker metadata for gdq-rd
         id: meta-rd
@@ -182,11 +173,9 @@ jobs:
         with:
           images: ghcr.io/goodow/gdq-rd
           labels: |
-            org.opencontainers.image.source=https://github.com/${{ env.MONO_REPO }}
-            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
+            org.opencontainers.image.revision=${{ env.SOURCE_COMMIT }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
-            type=raw,value=sha-${{ env.TARGET_COMMIT }}
+            type=raw,value=sha-${{ env.SOURCE_COMMIT }}
           bake-target: gdq-rd
       - name: Docker metadata for gdq-sim
         id: meta-sim
@@ -194,11 +183,9 @@ jobs:
         with:
           images: ghcr.io/goodow/gdq-sim
           labels: |
-            org.opencontainers.image.source=https://github.com/${{ env.MONO_REPO }}
-            org.opencontainers.image.revision=${{ env.TARGET_COMMIT }}
+            org.opencontainers.image.revision=${{ env.SOURCE_COMMIT }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref_name == 'mono' }}
-            type=raw,value=sha-${{ env.TARGET_COMMIT }}
+            type=raw,value=sha-${{ env.SOURCE_COMMIT }}
           bake-target: gdq-sim
 
       # Gate: 等待 verify job 完成后再构建推送
@@ -244,27 +231,91 @@ jobs:
           files: ${{ steps.bake-config.outputs.files }}
           targets: ${{ env.BAKE_TARGETS }}
           push: true
-          set: ${{ env.BAKE_SET }}
-
-      - name: Sync Images to TCR via Skopeo
-        run: |
-          # 检查并安装 skopeo（防万一）
-          if ! command -v skopeo &> /dev/null; then
-            echo "Installing skopeo..."
-            sudo apt-get update && sudo apt-get install -y skopeo
-          fi
-
-          echo "🚀 Syncing latest tags for mono branch..."
-          skopeo copy --retry-times 5 \
-            docker://ghcr.io/goodow/goodow-mono:latest \
-            docker://${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_OWNER }}/goodow-mono:latest
-          skopeo copy --retry-times 5 \
-            docker://ghcr.io/goodow/gdq-infra:latest \
-            docker://${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_OWNER }}/gdq-infra:latest
-          echo "🎉 All images successfully synced!"
+          # 镜像里的环境变量 SOURCE_COMMIT (各 Dockerfile 末尾的 ARG/ENV): 进容器 `env` 一眼看出是哪个提交建的
+          set: |
+            ${{ env.BAKE_SET }}
+            *.args.SOURCE_COMMIT=${{ env.SOURCE_COMMIT }}
 
       - name: Send alert
         if: always()
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+          JOB_CONTEXT: ${{ toJson(job) }}
+          RUNNER_CONTEXT: ${{ toJson(runner) }}
+        run: |
+          pip install -U --quiet --disable-pip-version-check goodow-workflow[telegram]
+          python -m goodow.workflow.github.send_alert
+
+  # ── :latest 只往前走 ──────────────────────────────────────────────────────
+  # 连着合并两个提交时两个 run 并行; 从前各自建完就推 :latest, 先合并的那个后建完, latest 就回到了旧提交。
+  # 现在每个 run 建完都在这里重算一次: latest = main 上最新的、全部镜像都已推了 sha-<提交> 的那个提交
+  # (.github/scripts/promote_latest.sh)。串行跑 (concurrency), 排队中较早的那次被取消无妨: 后排的读到的只会更多。
+  # TCR 同步也在这里: 源是 latest 现在指向的 sha-<提交> (不可变), 不是 :latest 本身。
+  promote-latest:
+    needs: build-and-push
+    if: github.ref_name == 'mono'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: promote-latest-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      IMAGES: goodow-mono mono-base gdq-etl gdq-infra gdq-rd gdq-sim
+      TCR_IMAGES: goodow-mono gdq-infra
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: wbt
+
+      # 只要 main 的提交历史 (不要文件内容): 判谁比谁新
+      - name: Fetch mono history
+        env:
+          PAT_FOR_GOODOW_MONO_SUBMODULES: ${{ secrets.PAT_FOR_GOODOW_MONO_SUBMODULES }}
+          MONO_REPO: ${{ secrets.MONO_REPO }}
+        run: |
+          git init -q mono
+          git -C mono fetch -q --depth 50 --filter=blob:none \
+            "https://x-access-token:${PAT_FOR_GOODOW_MONO_SUBMODULES}@github.com/${MONO_REPO}.git" \
+            +refs/heads/main:refs/remotes/origin/main
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: USERNAME
+          password: ${{ secrets.GHCR_TOKEN_MONO_FOR_TIANXA_GITHUB_ACTIONS }}
+      - name: Login to TCR Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.TCR_REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME_TCR }}
+          password: ${{ secrets.DOCKER_PASSWORD_TCR }}
+
+      - name: Promote latest
+        id: promote
+        # 锚是 IMAGES 的第一个: 读它 :latest 的 revision 标签
+        run: bash wbt/.github/scripts/promote_latest.sh mono ghcr.io/goodow $IMAGES
+
+      - name: Sync Images to TCR via Skopeo
+        env:
+          REVISION: ${{ steps.promote.outputs.revision }}
+        run: |
+          if [ -z "$REVISION" ]; then
+            echo "::warning::latest 指向的提交读不出 (锚镜像的 :latest 没有可展开的 revision 标签), TCR 不同步"
+            exit 0
+          fi
+          if ! command -v skopeo &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y skopeo
+          fi
+          for i in $TCR_IMAGES; do
+            skopeo copy --retry-times 5 \
+              "docker://ghcr.io/goodow/$i:sha-$REVISION" \
+              "docker://${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_OWNER }}/$i:latest"
+          done
+          echo "TCR 的 latest = sha-$REVISION ($TCR_IMAGES)"
+
+      - name: Send alert
+        if: failure()
         env:
           GITHUB_CONTEXT: ${{ toJson(github) }}
           JOB_CONTEXT: ${{ toJson(job) }}
