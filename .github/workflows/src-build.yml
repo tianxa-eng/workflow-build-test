@@ -1,0 +1,78 @@
+name: Source Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: source commit
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: src-build-${{ inputs.ref }}
+  cancel-in-progress: false
+
+env:
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: -1002100967409
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      SRC_REPO: ${{ secrets.SRC_REPO }}
+      SRC_TOKEN: ${{ secrets.SRC_TOKEN }}
+      REF: ${{ inputs.ref }}
+    steps:
+      - name: Fetch source
+        run: |
+          set -euo pipefail
+          git init -q src
+          cd src
+          git remote add origin "https://x-access-token:${SRC_TOKEN}@github.com/${SRC_REPO}.git"
+          git sparse-checkout set --no-cone /.github/public-build/
+          git fetch -q --depth 1 --filter=blob:none origin "$REF"
+          git checkout -q FETCH_HEAD
+          while IFS= read -r w; do [ -z "$w" ] || echo "::add-mask::$w"; done < .github/public-build/mask
+          git sparse-checkout set --no-cone --stdin < .github/public-build/sparse
+          git log -1 --format='%H %s'
+
+      - name: Report pending
+        run: |
+          curl -fsS -o /dev/null -X POST -H "Authorization: Bearer $SRC_TOKEN" \
+            "https://api.github.com/repos/$SRC_REPO/statuses/$REF" \
+            -d "{\"state\":\"pending\",\"context\":\"public-build\",\"description\":\"building\",\"target_url\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}"
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: USERNAME
+          password: ${{ secrets.GHCR_TOKEN_MONO_FOR_TIANXA_GITHUB_ACTIONS }}
+
+      - name: Build
+        working-directory: src
+        run: bash .github/public-build/run.sh
+
+      - name: Report result
+        if: always()
+        env:
+          STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
+        run: |
+          curl -fsS -o /dev/null -X POST -H "Authorization: Bearer $SRC_TOKEN" \
+            "https://api.github.com/repos/$SRC_REPO/statuses/$REF" \
+            -d "{\"state\":\"$STATE\",\"context\":\"public-build\",\"description\":\"$STATE\",\"target_url\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}"
+
+      - name: Send alert
+        if: failure()
+        run: |
+          curl -fsS -o /dev/null "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode chat_id="$TELEGRAM_CHAT_ID" \
+            --data-urlencode text="Source Build failed: ${REF:0:12} $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
