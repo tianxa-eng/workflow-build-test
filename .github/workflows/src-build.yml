@@ -3,40 +3,53 @@ name: Source Build
 on:
   workflow_dispatch:
     inputs:
+      source:
+        description: source key (A / B)
+        required: true
       ref:
         description: source commit
         required: true
+      base:
+        description: commit to compare against (optional)
+        required: false
+        default: ""
 
 permissions: {}
 
 concurrency:
-  group: src-build-${{ inputs.ref }}
+  group: src-build-${{ inputs.source }}-${{ inputs.ref }}
   cancel-in-progress: false
 
 env:
   TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
   TELEGRAM_CHAT_ID: -1002100967409
+  SRC_REPO: ${{ secrets[format('SRC_REPO_{0}', inputs.source)] }}
+  SRC_TOKEN: ${{ secrets.SRC_TOKEN }}
+  REF: ${{ inputs.ref }}
+  BASE: ${{ inputs.base }}
+  REGISTRY2: ${{ secrets.TCR_REGISTRY }}
+  REGISTRY2_OWNER: ${{ secrets.TCR_OWNER }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 300
-    env:
-      SRC_REPO: ${{ secrets.SRC_REPO }}
-      SRC_TOKEN: ${{ secrets.SRC_TOKEN }}
-      REF: ${{ inputs.ref }}
     steps:
       - name: Fetch source
         run: |
           set -euo pipefail
+          [ -n "$SRC_REPO" ] || { echo "::error::unknown source '${{ inputs.source }}'"; exit 1; }
           git init -q src
           cd src
           git remote add origin "https://x-access-token:${SRC_TOKEN}@github.com/${SRC_REPO}.git"
           git sparse-checkout set --no-cone /.github/public-build/
-          git fetch -q --depth 1 --filter=blob:none origin "$REF"
-          git checkout -q FETCH_HEAD
+          git fetch -q --depth 1 --filter=blob:none origin "$REF" ${BASE:+"$BASE"}
+          git checkout -q "$REF"
           while IFS= read -r w; do [ -z "$w" ] || echo "::add-mask::$w"; done < .github/public-build/mask
           git sparse-checkout set --no-cone --stdin < .github/public-build/sparse
+          if [ -f .gitmodules ]; then
+            git -c "url.https://x-access-token:${SRC_TOKEN}@github.com/.insteadOf=git@github.com:" submodule update -q --init --depth 1
+          fi
           git log -1 --format='%H %s'
 
       - name: Report pending
@@ -50,7 +63,7 @@ jobs:
         with:
           tool-cache: true
 
-      - name: Login to GitHub Container Registry
+      - name: Login to registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -75,4 +88,54 @@ jobs:
         run: |
           curl -fsS -o /dev/null "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             --data-urlencode chat_id="$TELEGRAM_CHAT_ID" \
-            --data-urlencode text="Source Build failed: ${REF:0:12} $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            --data-urlencode text="Source Build ${{ inputs.source }} failed: ${REF:0:12} $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+  # 串行的收尾 (同一个 source 一次一个): 源码里有 .github/public-build/after.sh 才跑, 例如把 :latest 移到最新的已建提交。
+  # 排队中较早的那次被 concurrency 取消无妨, 收尾脚本按 registry 里已有的东西重算。
+  after:
+    needs: build
+    runs-on: ubuntu-latest
+    concurrency:
+      group: src-after-${{ inputs.source }}
+      cancel-in-progress: false
+    steps:
+      - name: Fetch source
+        id: fetch
+        run: |
+          set -euo pipefail
+          git init -q src
+          cd src
+          git remote add origin "https://x-access-token:${SRC_TOKEN}@github.com/${SRC_REPO}.git"
+          git sparse-checkout set --no-cone /.github/public-build/
+          git fetch -q --depth 1 --filter=blob:none origin "$REF"
+          git checkout -q "$REF"
+          while IFS= read -r w; do [ -z "$w" ] || echo "::add-mask::$w"; done < .github/public-build/mask
+          [ -f .github/public-build/after.sh ] && echo "run=1" >> "$GITHUB_OUTPUT" || echo "nothing to do"
+
+      - name: Login to registry
+        if: steps.fetch.outputs.run == '1'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: USERNAME
+          password: ${{ secrets.GHCR_TOKEN_MONO_FOR_TIANXA_GITHUB_ACTIONS }}
+
+      - name: Login to second registry
+        if: steps.fetch.outputs.run == '1' && env.REGISTRY2 != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.TCR_REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME_TCR }}
+          password: ${{ secrets.DOCKER_PASSWORD_TCR }}
+
+      - name: After
+        if: steps.fetch.outputs.run == '1'
+        working-directory: src
+        run: bash .github/public-build/after.sh
+
+      - name: Send alert
+        if: failure()
+        run: |
+          curl -fsS -o /dev/null "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode chat_id="$TELEGRAM_CHAT_ID" \
+            --data-urlencode text="Source Build ${{ inputs.source }} after-step failed: ${REF:0:12} $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
