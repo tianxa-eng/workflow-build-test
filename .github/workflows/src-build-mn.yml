@@ -1,0 +1,28 @@
+name: Source Build MN
+# run-name 的表达式没有截取子串的函数, 所以短 hash 由触发方传 (short)
+run-name: MN ${{ inputs.short }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: source commit
+        required: true
+      base:
+        description: commit to compare against (optional)
+        required: false
+        default: ""
+      short:
+        description: short commit id shown in the run title
+        required: true
+
+permissions: {}
+
+jobs:
+  build:
+    uses: ./.github/workflows/src-build.yml
+    with:
+      source: MN
+      ref: ${{ inputs.ref }}
+      base: ${{ inputs.base }}
+    secrets: inherit
