@@ -120,13 +120,23 @@ jobs:
           username: USERNAME
           password: ${{ secrets.GHCR_TOKEN_MONO_FOR_TIANXA_GITHUB_ACTIONS }}
 
+      # 第二个 registry 在境内, 从 GitHub 的 runner 登录偶尔超时 (docker 客户端 15 秒, "context deadline exceeded"):
+      # docker/login-action 不带重试, 这里自己重试。runner 用完即弃, 不需要 logout。
       - name: Login to second registry
         if: steps.fetch.outputs.run == '1' && env.REGISTRY2 != ''
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.TCR_REGISTRY }}
-          username: ${{ secrets.DOCKER_USERNAME_TCR }}
-          password: ${{ secrets.DOCKER_PASSWORD_TCR }}
+        env:
+          REGISTRY2_USERNAME: ${{ secrets.DOCKER_USERNAME_TCR }}
+          REGISTRY2_PASSWORD: ${{ secrets.DOCKER_PASSWORD_TCR }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if printf '%s' "$REGISTRY2_PASSWORD" | docker login "$REGISTRY2" --username "$REGISTRY2_USERNAME" --password-stdin; then
+              exit 0
+            fi
+            echo "::warning::第二个 registry 登录失败 (第 $attempt/5 次)"
+            [ "$attempt" = 5 ] || sleep $((attempt * 10))
+          done
+          echo "::error::第二个 registry 连续 5 次登录失败, 见上面各次的报错"
+          exit 1
 
       - name: After
         if: steps.fetch.outputs.run == '1'
