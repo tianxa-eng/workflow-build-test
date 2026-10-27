@@ -1,17 +1,22 @@
-name: Source Build
+# 通用构建, 只被 src-build-<source>.yml 调用 (每个源仓库一个入口, Actions 页面按 workflow 过滤, run 标题带短 hash)。
+# 加一个源仓库: 复制一份入口文件, 改 name / run-name / source, 再加 secret SRC_REPO_<SOURCE>。
+name: Source Build (reusable)
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       source:
         description: source key (MN / MF)
         required: true
+        type: string
       ref:
         description: source commit
         required: true
+        type: string
       base:
         description: commit to compare against (optional)
         required: false
+        type: string
         default: ""
 
 permissions: {}
