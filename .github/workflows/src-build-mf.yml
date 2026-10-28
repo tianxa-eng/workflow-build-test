@@ -1,6 +1,6 @@
 name: Source Build MF
 # run-name 的表达式没有截取子串的函数, 所以短 hash 由触发方传 (short)
-run-name: MF ${{ inputs.short }}
+run-name: MF ${{ inputs.short }} ${{ inputs.images }}
 
 on:
   workflow_dispatch:
@@ -15,6 +15,10 @@ on:
       short:
         description: short commit id shown in the run title
         required: true
+      images:
+        description: which images to build (short codes, also shown in the run title)
+        required: false
+        default: ""
 
 permissions: {}
 
@@ -25,4 +29,5 @@ jobs:
       source: MF
       ref: ${{ inputs.ref }}
       base: ${{ inputs.base }}
+      images: ${{ inputs.images }}
     secrets: inherit
