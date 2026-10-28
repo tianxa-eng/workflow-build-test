@@ -18,11 +18,16 @@ on:
         required: false
         type: string
         default: ""
+      images:
+        description: which images to build (short codes the source maps to its own names; empty = the source decides)
+        required: false
+        type: string
+        default: ""
 
 permissions: {}
 
 concurrency:
-  group: src-build-${{ inputs.source }}-${{ inputs.ref }}
+  group: src-build-${{ inputs.source }}-${{ inputs.ref }}-${{ inputs.images }}
   cancel-in-progress: false
 
 env:
@@ -31,6 +36,9 @@ env:
   SRC_REPO: ${{ secrets[format('SRC_REPO_{0}', inputs.source)] }}
   PAT_FOR_SRC_GD_DEV: ${{ secrets.PAT_FOR_SRC_GD_DEV }}
   REF: ${{ inputs.ref }}
+  IMAGES: ${{ inputs.images }}
+  # 一个提交分镜像建时各写各的状态
+  STATUS_CONTEXT: public-build${{ inputs.images && format('/{0}', inputs.images) || '' }}
   BASE: ${{ inputs.base }}
   REGISTRY2: ${{ secrets.TCR_REGISTRY }}
   REGISTRY2_OWNER: ${{ secrets.TCR_OWNER }}
@@ -61,7 +69,7 @@ jobs:
         run: |
           curl -fsS -o /dev/null -X POST -H "Authorization: Bearer $PAT_FOR_SRC_GD_DEV" \
             "https://api.github.com/repos/$SRC_REPO/statuses/$REF" \
-            -d "{\"state\":\"pending\",\"context\":\"public-build\",\"description\":\"building\",\"target_url\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}"
+            -d "{\"state\":\"pending\",\"context\":\"$STATUS_CONTEXT\",\"description\":\"building\",\"target_url\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}"
 
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
@@ -86,7 +94,7 @@ jobs:
         run: |
           curl -fsS -o /dev/null -X POST -H "Authorization: Bearer $PAT_FOR_SRC_GD_DEV" \
             "https://api.github.com/repos/$SRC_REPO/statuses/$REF" \
-            -d "{\"state\":\"$STATE\",\"context\":\"public-build\",\"description\":\"$STATE\",\"target_url\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}"
+            -d "{\"state\":\"$STATE\",\"context\":\"$STATUS_CONTEXT\",\"description\":\"$STATE\",\"target_url\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}"
 
       - name: Send alert
         if: failure()
