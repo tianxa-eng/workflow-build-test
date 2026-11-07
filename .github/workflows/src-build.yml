@@ -72,6 +72,7 @@ jobs:
             -d "{\"state\":\"pending\",\"context\":\"$STATUS_CONTEXT\",\"description\":\"building\",\"target_url\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}"
 
       - name: Free Disk Space (Ubuntu)
+        if: inputs.source == 'MN'
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
