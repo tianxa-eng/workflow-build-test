@@ -40,8 +40,6 @@ env:
   # 一个提交分镜像建时各写各的状态
   STATUS_CONTEXT: public-build${{ inputs.images && format('/{0}', inputs.images) || '' }}
   BASE: ${{ inputs.base }}
-  REGISTRY2: ${{ secrets.TCR_REGISTRY }}
-  REGISTRY2_OWNER: ${{ secrets.TCR_OWNER }}
 
 jobs:
   build:
@@ -106,6 +104,7 @@ jobs:
 
   # 串行的收尾 (同一个 source 一次一个): 源码里有 .github/public-build/after.sh 才跑, 例如把 :latest 移到最新的已建提交。
   # 排队中较早的那次被 concurrency 取消无妨, 收尾脚本按 registry 里已有的东西重算。
+  # 只碰 ghcr、秒级结束; 慢的第二个 registry 同步在下面的 sync2, 不能放进这个串行组里挡住下一次 :latest 推进。
   after:
     needs: build
     runs-on: ubuntu-latest
@@ -134,9 +133,56 @@ jobs:
           username: USERNAME
           password: ${{ secrets.GHCR_TOKEN_MONO_FOR_TIANXA_GITHUB_ACTIONS }}
 
+      - name: After
+        if: steps.fetch.outputs.run == '1'
+        working-directory: src
+        run: bash .github/public-build/after.sh
+
+      - name: Send alert
+        if: failure()
+        run: |
+          curl -fsS -o /dev/null "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode chat_id="$TELEGRAM_CHAT_ID" \
+            --data-urlencode text="Source Build ${{ inputs.source }} after-step failed: ${REF:0:12} $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+  # 第二个 registry (境内, 链路慢, 一次可达数小时) 的同步: 源码里有 .github/public-build/sync2.sh 才跑。
+  # 自己的串行组, 与 after 互不排队; 排队的只留最新一个 (连着合并多个提交时合并成只拷最新那个)。
+  # 拷的是执行时 ghcr 的 :latest, 不是本次 run 的提交, 所以迟到、被替掉、重跑旧 run 都不会把第二个 registry 拉回旧提交。
+  sync2:
+    needs: after
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    concurrency:
+      group: src-sync2-${{ inputs.source }}
+      cancel-in-progress: false
+    env:
+      REGISTRY2: ${{ secrets.TCR_REGISTRY }}
+      REGISTRY2_OWNER: ${{ secrets.TCR_OWNER }}
+    steps:
+      - name: Fetch source
+        id: fetch
+        run: |
+          set -euo pipefail
+          git init -q src
+          cd src
+          git remote add origin "https://x-access-token:${PAT_FOR_SRC_GD_DEV}@github.com/${SRC_REPO}.git"
+          git sparse-checkout set --no-cone /.github/public-build/
+          git fetch -q --depth 1 --filter=blob:none origin "$REF"
+          git checkout -q "$REF"
+          while IFS= read -r w; do [ -z "$w" ] || echo "::add-mask::$w"; done < .github/public-build/mask
+          [ -f .github/public-build/sync2.sh ] && echo "run=1" >> "$GITHUB_OUTPUT" || echo "nothing to do"
+
+      - name: Login to registry
+        if: steps.fetch.outputs.run == '1'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: USERNAME
+          password: ${{ secrets.GHCR_TOKEN_MONO_FOR_TIANXA_GITHUB_ACTIONS }}
+
       # 第二个 registry 在境内, 从 GitHub 的 runner 登录偶尔超时 (docker 客户端 15 秒, "context deadline exceeded")。
       # 同一台 runner 上连试 5 次、3 分钟都不通 (run 40487243601), 换一台新 runner 几分钟后就通: 所以这里只重试一次就失败,
-      # 由 src-build-retry.yml 在新 runner 上重跑这个任务。
+      # 由 src-build-retry.yml 在新 runner 上重跑这个任务 (按步骤名 "Login to second registry" 认, 改名要同步改那边)。
       - name: Login to second registry
         if: steps.fetch.outputs.run == '1' && env.REGISTRY2 != ''
         env:
@@ -153,14 +199,14 @@ jobs:
           echo "::error::第二个 registry 在这台 runner 上连续登录失败; src-build-retry.yml 会换一台 runner 重跑一次"
           exit 1
 
-      - name: After
+      - name: Sync second registry
         if: steps.fetch.outputs.run == '1'
         working-directory: src
-        run: bash .github/public-build/after.sh
+        run: bash .github/public-build/sync2.sh
 
       - name: Send alert
         if: failure()
         run: |
           curl -fsS -o /dev/null "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             --data-urlencode chat_id="$TELEGRAM_CHAT_ID" \
-            --data-urlencode text="Source Build ${{ inputs.source }} after-step failed: ${REF:0:12} $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            --data-urlencode text="Source Build ${{ inputs.source }} sync2-step failed: ${REF:0:12} $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
